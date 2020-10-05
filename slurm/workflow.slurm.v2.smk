@@ -499,11 +499,14 @@ rule reads_summary:
     input:
         bam="bam/{entry_id}.{assembly}.mdups.bam"
     output:
-        "reads_summary/{entry_id}.{assembly}.reads_summary.txt"
+        "reads_summary/{entry_id,EE[0-9]+}.{assembly,hg[0-9]+}.reads_summary.txt"
     threads: 1
     resources:
         cpus=lambda wildcards, threads: threads,
         mem_mb=lambda wildcards, threads: threads * 4000
+    params:
+        label=lambda wildcards: f"{wildcards.entry_id}.{wildcards.assembly}",
+        partition="RM-shared"
     shell:
         """
         echo `date +"%F %T %Z"` "Job started: entry_id: {wildcards.entry_id}"
@@ -553,7 +556,7 @@ rule picard_metrics_insert_size:
     resources:
         cpus=lambda wildcards, threads: threads,
         mem_mb=lambda wildcards, threads: threads * 4200,
-        time_min=lambda wildcards, input: math.ceil(os.path.getsize(input.sam) / 2 / 1024**3) * 10 + 45,
+        time_min=lambda wildcards, input: math.ceil(os.path.getsize(input.sam) / 3 / 1024**3) * 10 + 45,
         input_size=lambda wildcards, input: round(os.path.getsize(input.sam) / 1024**2)
     params:
         label=lambda wildcards: f"{wildcards.entry_id}.{wildcards.assembly}",
@@ -589,7 +592,7 @@ rule picard_metrics_lib_complexity:
     resources:
         cpus=lambda wildcards, threads: threads,
         mem_mb=lambda wildcards, threads: threads * 4200,
-        time_min=lambda wildcards, input: round(nlogn(os.path.getsize(input.sam) / 2) * 10 + 45),
+        time_min=lambda wildcards, input: round(nlogn(os.path.getsize(input.sam) / 3) * 10 + 45),
         input_size=lambda wildcards, input: round(os.path.getsize(input.sam) / 1024**2)
     params:
         label=lambda wildcards: f"{wildcards.entry_id}.{wildcards.assembly}",
@@ -627,7 +630,7 @@ rule picard_metrics_gc_bias:
     resources:
         cpus=lambda wildcards, threads: threads,
         mem_mb=lambda wildcards, threads: threads * 4200,
-        time_min=lambda wildcards, input: round(nlogn(os.path.getsize(input.sam) / 2) * 10 + 30),
+        time_min=lambda wildcards, input: round(nlogn(os.path.getsize(input.sam) / 3) * 10 + 30),
         input_size=lambda wildcards, input: round(os.path.getsize(input.sam) / 1024**2)
     params:
         xmx_mb=lambda wildcards, threads: threads * 4000 - 768,
@@ -654,30 +657,6 @@ rule picard_metrics_gc_bias:
         cp -a $LOCAL/gc_bias.log {output.gc_bias_log}.tmp
         mv {output.gc_bias_log}.tmp {output.gc_bias_log}
         """
-
-
-# rule picard_metrics_gc_bias:
-#     input:
-#         bam="bam/{entry_id}.{assembly}.filtered.bam",
-#         bai="bam/{entry_id}.{assembly}.filtered.bam.bai",
-#         ref=lambda wildcards: [S3.remote(f"{ref_genome_fa[wildcards.assembly]['path']}{ext}") for ext in ["", ".fai", ".gzi"]]
-#     output:
-#         gc_bias="picard_metrics/{entry_id,EE[0-9]+}.{assembly}.gc_bias.txt",
-#         gc_bias_chart="picard_metrics/{entry_id}.{assembly}.gc_bias.pdf",
-#         gc_bias_summary="picard_metrics/{entry_id}.{assembly}.gc_bias.summary.txt"
-#     log:
-#         gc_bias="picard_metrics/{entry_id}.{assembly}.gc_bias.log"
-#     threads: 2
-#     resources:
-#         mem_mb=lambda wildcards, attempt: attempt * 4000,
-#         disk_mb=lambda wildcards, attempt: attempt * 20000
-#     shell:
-#         """
-#         picard -XX:+UseParallelGC -Dpicard.useLegacyParser=false -Xms512m -Xmx{resources.mem_mb}m \
-#             CollectGcBiasMetrics -I {input.bam}  -R {input.ref[0]} \
-#             -O {output.gc_bias} -CHART {output.gc_bias_chart} -S {output.gc_bias_summary}\
-#             2> >(tee {log.gc_bias} >&2)
-#         """   
 
 
 rule calc_coverage:
@@ -806,16 +785,16 @@ rule calc_wps:
         frag="frag/{entry_id}.{assembly}.frag.gz"
     output:
         bw="wps/{entry_id}.{assembly}.{wps_type}.mapq30.bw",
-        # Output
-        bg=expand("wps/{{entry_id}}.{{assembly}}.{{wps_type}}.mapq30.bedGraph.gz{postfix}", postfix=["", ".tbi"])
     threads: 1
     resources:
         cpus=lambda wildcards, threads: threads,
         mem_mb=lambda wildcards, threads: threads * 4200,
-        time_min=lambda wildcards, input, threads: round(nlogn(os.path.getsize(input.frag)) * 60 / threads + 30),
+        time_min=lambda wildcards, input, threads: round(nlogn(os.path.getsize(input.frag)) * 90 / threads + 60),
         input_size=lambda wildcards, input: round(os.path.getsize(input.frag) / 1024**2)
     params:
         mem_mb_sortbed=lambda wildcards, threads, resources: int((resources.mem_mb - 2000) * 0.5),
+        label=lambda wildcards: f"{wildcards.entry_id}.{wildcards.assembly}",
+        partition="RM-shared"
     shell:
         """
         echo `date +"%F %T %Z"` "Job started: entry_id: {wildcards.entry_id}"
@@ -837,170 +816,19 @@ rule calc_wps:
 
         if [[ "{wildcards.assembly}" == "hg19" ]]; then
             echo `date +"%F %T %Z"` "Assembly is hg19, will go through contig mapping"
-            cp $LOCAL/temp.bedGraph temp/{wildcards.entry_id}.{wildcards.assembly}.{wildcards.wps_type}.temp.bedGraph
             cat $LOCAL/temp.bedGraph | python scripts/contig_mapping.py scripts/contig_mapping.csv | sort-bed --max-mem {params.mem_mb_sortbed}M --tmpdir $LOCAL/ - > $LOCAL/temp.contig_mapped.bedGraph
-            cp $LOCAL/temp.contig_mapped.bedGraph temp/{wildcards.entry_id}.{wildcards.assembly}.{wildcards.wps_type}.temp.contig_mapped.bedGraph
+            echo `date +"%F %T %Z"` "Generating the bigWig track..."
             bedGraphToBigWig $LOCAL/temp.contig_mapped.bedGraph {input.ucsc_hg19} $LOCAL/output.bw
         else
             echo `date +"%F %T %Z"` "Assembly is not hg19, contig mapping is not needed"
+            echo `date +"%F %T %Z"` "Generating the bigWig track..."
             bedGraphToBigWig $LOCAL/temp.bedGraph {input.chrom_sizes} $LOCAL/output.bw
         fi
 
-        echo `date +"%F %T %Z"` "Compressing bedGraph..."
-        bgzip -@ {threads} $LOCAL/temp.bedGraph
-
-        echo `date +"%F %T %Z"` "Indexing bedGraph..."
-        tabix -p bed $LOCAL/temp.bedGraph.gz
-
         echo `date +"%F %T %Z"` "Copying results to target directory..."
-        parallel --jobs {threads} -n 2 cp -a ::: "$LOCAL/temp.bedGraph.gz" {output.bg[0]} "$LOCAL/temp.bedGraph.gz.tbi" {output.bg[1]} "$LOCAL/output.bw" {output.bw}
-
-        echo `date +"%F %T %Z"` "Clearing up..."
-        rm -f temp/{wildcards.entry_id}.{wildcards.assembly}.{wildcards.wps_type}.*
+        cp -a $LOCAL/output.bw {output.bw}.tmp
+        mv {output.bw}.tmp {output.bw}
         """
-
-# rule calc_wps:
-#     input:
-#         chrom_sizes=lambda wildcards: HTTP.remote(chrom_sizes[wildcards.assembly], keep_local=True),
-#         ucsc_hg19=HTTP.remote(chrom_sizes["ucsc_hg19"], keep_local=True),
-#         frag="entries/{sample_id}/{assembly}/{sample_id}.{assembly}.frag.tsv.bgz"
-#     output:
-#         # Calculate WPS for both MAPQ>=30 and whatever MAPQ
-#         bw="entries/{sample_id}/{assembly}/{sample_id}.{assembly}.wps.mapq30.bw",
-#         # Output
-#         bg=expand("entries/{{sample_id}}/{{assembly}}/{{sample_id}}.{{assembly}}.wps.mapq30.bedGraph.bgz{postfix}", postfix=["", ".tbi"]),
-#         log="logs/{sample_id}.{assembly}.wps.log"
-#     threads: 1
-#     resources:
-#         mem_mb=3000,
-#         disk_mb=100000
-#     params:
-#         mem_mb_sortbed=lambda wildcards, threads, resources: int(resources.mem_mb - 500)
-#     shell:
-#         """
-#         # MAPQ>=30
-#         echo "Calculating the MAPQ>=30 L-WPS (fragment size 120+)..."
-#         bgzip -d < {input.frag} | awk '$4>=30 && $3-$2>120' | python calc_wps.mosdepth.py -i - -g {input.chrom_sizes} -w 60 | bedClip /dev/stdin {input.chrom_sizes} temp.bedGraph
-#         bgzip -c temp.bedGraph > {output.bg[0]}
-#         tabix -p bed {output.bg[0]}
-#         if [[ "{wildcards.assembly}" == "hg19" ]]; then
-#             echo "Assembly is hg19, will go through contig mapping"
-#             unlink temp.bedGraph
-#             bgzip -d < {output.bg[0]} | python contig_mapping.py | sort-bed --max-mem {params.mem_mb_sortbed}M - | bedClip /dev/stdin {input.ucsc_hg19} temp.contig_mapped.bedGraph
-#             bedGraphToBigWig temp.contig_mapped.bedGraph {input.ucsc_hg19} {output.bw}
-#             unlink temp.contig_mapped.bedGraph
-#         else
-#             echo "Assembly is not hg19, contig mapping is not needed"
-#             bedGraphToBigWig temp.bedGraph {input.chrom_sizes} {output.bw}
-#             unlink temp.bedGraph
-#         fi
-
-#         touch {output.log}
-#         """
-
-
-
-
-# rule reads_summary:
-#     input:
-#         bam="entries/{entry_id}/{assembly}/{entry_id}.{assembly}.mdups.bam"
-#     output:
-#         "entries/{entry_id}/{assembly}/{entry_id}.{assembly}.reads_summary.txt"
-#     threads: 1
-#     resources:
-#         mem_mb=lambda wildcards, attempt: attempt * 2000,
-#         disk_mb=50000
-#     run:
-#         def reads_summary(bam_in, summary_out):
-#             import pysam
-
-#             total_reads = 0
-#             total_mapped = 0
-#             uniq_mapped = 0
-#             uniq_mapped_nopcr = 0
-#             uniq_mapped_nopcr_proper_paired = 0
-#             uniq_mapped_nopcr_proper_paired_mapq1 = 0
-#             uniq_mapped_nopcr_proper_paired_mapq30 = 0
-#             with pysam.AlignmentFile(bam_in, "rb") as samfile:
-#                 for read in samfile.fetch(until_eof=True):
-#                     total_reads += 1
-#                     if not read.is_unmapped:
-#                         total_mapped +=1
-#                         if not read.is_secondary:
-#                             uniq_mapped += 1
-#                             if not read.is_duplicate:
-#                                 uniq_mapped_nopcr += 1
-#                                 if read.is_paired and read.is_proper_pair:
-#                                     uniq_mapped_nopcr_proper_paired += 1
-#                                     if read.mapping_quality >= 1:
-#                                         uniq_mapped_nopcr_proper_paired_mapq1 += 1
-#                                         if read.mapping_quality >= 30:
-#                                             uniq_mapped_nopcr_proper_paired_mapq30 += 1
-
-#             with open (summary_out, 'w') as out:
-#                 line = 'Total:\t' + str(total_reads) \
-#                         + '\nMapped:\t' + str(total_mapped) \
-#                         + '\nUniqMapped:\t' + str(uniq_mapped) \
-#                         + '\nUniqMappedNoPcr:\t' + str(uniq_mapped_nopcr) \
-#                         + '\nUniqMappedNoPcrProperPaired:\t' + str(uniq_mapped_nopcr_proper_paired) \
-#                         + '\nUniqMappedNoPcrProperPairedMinMapQ1:\t' + str(uniq_mapped_nopcr_proper_paired_mapq1) \
-#                         + '\nUniqMappedNoPcrProperPairedMinMapQ30:\t' + str(uniq_mapped_nopcr_proper_paired_mapq30) + '\n'
-#                 out.write(line)
-
-#         reads_summary(input.bam, output[0])
-
-
-# rule picard_metrics_insert_size:
-#     input:
-#         bam="entries/{entry_id}/{assembly}/{entry_id}.{assembly}.mdups.bam"
-#         # ref=lambda wildcards: [S3.remote(f"pandisease.epifluidlab.cchmc.org/{ref_genome_fa[wildcards.assembly]['path']}{ext}") for ext in ["", ".fai", ".gzi"]]
-#     output:
-#         insert_size="entries/{entry_id}/{assembly}/{entry_id}.{assembly}.insert_size.txt",
-#         insert_size_pdf="entries/{entry_id}/{assembly}/{entry_id}.{assembly}.insert_size.pdf"
-#     threads: 2
-#     resources:
-#         mem_mb=lambda wildcards, attempt: attempt * 4000,
-#         disk_mb=50000
-#     shell:
-#         """
-#         picard -XX:+UseParallelGC -Dpicard.useLegacyParser=false -Xms512m -Xmx{resources.mem_mb}m \
-#             CollectInsertSizeMetrics -I {input.bam} -O {output.insert_size} -H {output.insert_size_pdf}
-#         """
-
-# rule picard_metrics_lib_complexity:
-#     input:
-#         bam="entries/{entry_id}/{assembly}/{entry_id}.{assembly}.mdups.bam"
-#     output:
-#         lib_complexity="entries/{entry_id}/{assembly}/{entry_id}.{assembly}.lib_complexity.txt"
-#     threads: 2
-#     resources:
-#         mem_mb=lambda wildcards, attempt: attempt * 4000,
-#         disk_mb=50000
-#     shell:
-#         """
-#         picard -XX:+UseParallelGC -Dpicard.useLegacyParser=false -Xms512m -Xmx{resources.mem_mb}m \
-#             EstimateLibraryComplexity -I {input.bam} -O {output.lib_complexity} -VALIDATION_STRINGENCY SILENT
-#         """
-
-# rule picard_metrics_gc_bias2:
-#     input:
-#         bam="entries/{entry_id}/{assembly}/{entry_id}.{assembly}.mdups.bam",
-#         ref=lambda wildcards: [S3.remote(f"pandisease.epifluidlab.cchmc.org/{ref_genome_fa[wildcards.assembly]['path']}{ext}") for ext in ["", ".fai", ".gzi"]]
-#     output:
-#         gc_bias="entries/{entry_id}/{assembly}/{entry_id}.{assembly}.gc_bias.txt",
-#         gc_bias_chart="entries/{entry_id}/{assembly}/{entry_id}.{assembly}.gc_bias.pdf",
-#         gc_bias_summary="entries/{entry_id}/{assembly}/{entry_id}.{assembly}.gc_bias.summary.txt"
-#     threads: 2
-#     resources:
-#         mem_mb=lambda wildcards, attempt: attempt * 4000,
-#         disk_mb=50000
-#     shell:
-#         """
-#         echo Evaluating GC bias...
-#         picard -XX:+UseParallelGC -Dpicard.useLegacyParser=false -Xms512m -Xmx{resources.mem_mb}m \
-#             CollectGcBiasMetrics -I {input.bam}  -R {input.ref[0]} \
-#             -O {output.gc_bias} -CHART {output.gc_bias_chart} -S {output.gc_bias_summary}
-#         """        
 
 
 # rule samtools_stats:

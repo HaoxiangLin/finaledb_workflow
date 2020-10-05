@@ -54,3 +54,17 @@ Similar to working with SLURM interactive nodes, except for a fundamental differ
 ```
 singularity-args: "--bind $LOCAL:{absolute path for intermediate output}"
 ```
+
+# Utilities
+
+## Calculate the endpoint coverage
+
+The script `endpoint_coverage.R` calculates the fragment coverage of each endpoints, i.e. the number of fragments starting at each position, as well as the number of fragments ending in each position.
+
+Usage: 
+
+```
+endpoints_coverage.R fragment.tsv.gz endpoints_coverage_start.bed.gz endpoints_coverage_end.bed.gz
+```
+
+The script takes the fragmentation data file as input, calcualte the coverage profile for both endpoints. The output is in BED format.
